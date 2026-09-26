@@ -24,7 +24,7 @@ and the episode context is
 c_it = [time of day, day type, temperature, precipitation, trip distance].
 ```
 
-The main steps are:
+The main modeling sequence is:
 
 ```text
 Observed activity episode
@@ -59,9 +59,7 @@ profiles rho_k                  determines profile weights
 
 ### 1. Nonlinear behavioral representation
 
-Activity type and transport mode are one-hot encoded and combined with activity duration. The resulting behavioral vector is standardized and mapped into a nonlinear Random Fourier Feature (RFF) space.
-
-The RFF vector is L2-normalized before entering the density-matrix model.
+Activity type and transport mode are one-hot encoded and combined with activity duration. The resulting behavioral vector is standardized and mapped into a nonlinear Random Fourier Feature (RFF) space. The RFF vector is L2-normalized before entering the density-matrix model.
 
 ### 2. Population-level behavioral profiles
 
@@ -73,7 +71,7 @@ rho_k = V_k V_k^T / Tr(V_k V_k^T)
 
 which is symmetric, positive semidefinite, and trace-normalized by construction.
 
-The eigenstructure of each profile allows one profile to contain multiple behavioral sub-patterns rather than forcing each profile to represent only one activity-mode pattern.
+The eigenstructure of each profile allows a single profile to contain multiple behavioral sub-patterns rather than forcing each profile to represent only one activity-mode pattern.
 
 ### 3. Context-dependent profile activation
 
@@ -121,14 +119,26 @@ rho_i(t)
 
 This allows each traveler to remain a continuous mixture of behavioral profiles while carrying information from previous episodes forward.
 
-### 5. Estimation and profile interpretation
+### 5. Estimation and interpretation
 
-The profile factors \(V_k\) and context coefficients \(\beta_k\) are optimized with Adam using the negative log-likelihood, together with:
+The profile factors \(V_k\) and context coefficients \(\beta_k\) are optimized with Adam using the negative log-likelihood, together with entropy regularization on profile eigenvalues and L2 regularization on the context coefficients.
 
-- entropy regularization on profile eigenvalues; and
-- L2 regularization on the context coefficients.
+After estimation, each density matrix is eigendecomposed. The dominant eigenmodes are then interpreted using the observed activity, transport-mode, and duration data.
 
-After estimation, each density matrix is eigendecomposed. The code then identifies the activity types, transport modes, and activity durations associated with the dominant eigenmodes using the observed TimeUse+ activity records.
+---
+
+## Repository Files
+
+The repository is organized around the main stages of the analysis:
+
+| File | Purpose |
+| --- | --- |
+| `preprocess_timeuse.py` | Cleans and prepares the TimeUse+ and weather data and produces `activities_merged4.csv`. |
+| `quantum_traveler_profiling.py` | Estimates the main quantum-inspired traveler behavioral profiling model. |
+| `ablation_study.py` | Runs the three ablation experiments used in the paper. |
+| `comparison_models.py` | Estimates the comparison MNL, latent class, and HMM models. |
+| `paper_figures.py` | Contains reusable functions for reproducing selected figures from the paper. |
+| `requirements.txt` | Lists the Python packages required to run the repository code. |
 
 ---
 
@@ -168,122 +178,72 @@ Weather observations are matched to each activity episode using the activity loc
 
 ---
 
-## Preparing the Input Data
+## Data Preprocessing
 
-The model script expects a cleaned, episode-level CSV. The preprocessing used for the empirical application is described below.
+The raw TimeUse+ activity records and weather information must first be prepared using:
 
-### Step 1 — Remove untracked activities
-
-Remove activity records that contain no usable activity information.
-
-### Step 2 — Consolidate home activities
-
-All activities recorded at the home location are consolidated under a single:
-
-```text
-Home
+```bash
+python preprocess_timeuse.py
 ```
 
-activity category.
+The preprocessing script performs the steps used in the empirical analysis, including:
 
-### Step 3 — Merge consecutive records
+- removing unusable activity records;
+- consolidating home and work activities;
+- assigning trip mode and distance to destination activities;
+- constructing local temporal variables;
+- matching weather observations;
+- calculating activity duration;
+- merging consecutive records corresponding to the same activity and location; and
+- creating the final sequential episode dataset.
 
-Within each participant's chronological record, merge consecutive rows when they correspond to:
+The resulting file is:
 
-- the same participant;
-- the same activity; and
-- the same location.
+```text
+activities_merged4.csv
+```
 
-The merged rows form one activity episode. Sum the activity durations across the merged rows.
-
-### Step 4 — Recover missing activity durations
-
-For episodes with missing duration, calculate duration using the recorded start and end times.
-
-Activity duration should be stored in **minutes**.
-
-### Step 5 — Match weather information
-
-Match NOAA GSOD temperature and precipitation information to each activity episode based on:
-
-- activity location; and
-- episode start time.
-
-Append the resulting weather variables to the activity data.
-
-### Step 6 — Retain trip distance
-
-Retain the trip distance associated with each activity episode. In the empirical application, trip distance is represented in **kilometers**.
-
-### Step 7 — Construct the final episode-level file
-
-The final dataset should contain one row per activity episode and include at least the following columns:
-
-| Column | Description |
-| --- | --- |
-| `participant_id` | Participant identifier |
-| `started_at_utc_global` | Episode start timestamp used to order each participant's sequence |
-| `activity_new` | Activity type |
-| `mode_choice_new` | Transport mode used to reach the activity |
-| `event_duration_new` | Activity duration in minutes |
-| `time_of_day_new` | Local hour of day, 0–23 |
-| `day_of_week_new` | Day of week, coded 1–7 with Saturday = 6 and Sunday = 7 |
-| `temp_celsius_new` | Temperature in degrees Celsius |
-| `precip_depth_mm_new` | Precipitation depth in millimeters |
-| `trip_distance_new` | Trip distance in kilometers |
-
-The original TimeUse+ activity and transport-mode categories are retained, except for the consolidation of activities recorded at home.
+For full implementation details, see `preprocess_timeuse.py`.
 
 The empirical dataset used in the manuscript contains approximately **146,318 activity episodes from 1,310 participants** after preprocessing.
 
-### Input filename
+---
 
-The current released script intentionally preserves the filename used in the analysis:
+## Installation
 
-```text
-activities_merged4.csv
+Python 3.10 or newer is recommended.
+
+Create and activate a virtual environment if desired, then install all required packages with:
+
+```bash
+pip install -r requirements.txt
 ```
 
-Save or copy the final prepared dataset under that filename and place it in the same directory as the Python script.
+The requirements file covers all scripts in this repository.
 
 ---
 
-## What the Script Does to the Prepared Data
+## Reproducing the Main Model
 
-Once `activities_merged4.csv` has been created, no additional manual feature engineering is required.
-
-The script:
-
-1. removes rows missing required model variables;
-2. sorts episodes by participant and timestamp;
-3. converts hour of day into five time periods;
-4. converts day of week into Weekday, Saturday, or Sunday;
-5. one-hot encodes activity type and transport mode;
-6. builds the context matrix;
-7. standardizes the behavioral and context variables;
-8. generates normalized Random Fourier Features;
-9. estimates the density-matrix behavioral profiles;
-10. sequentially updates traveler states;
-11. performs profile eigendecomposition; and
-12. decodes the dominant profile sub-patterns using the observed activity data.
-
-
-## Run
-
-Place these two files in the same directory:
-
-```text
-quantum_traveler_profiling.py
-activities_merged4.csv
-```
-
-Then run:
+After preprocessing, place `activities_merged4.csv` in the repository root and run:
 
 ```bash
 python quantum_traveler_profiling.py
 ```
 
-The default configuration reproduces the core model specification used in the manuscript:
+The main script:
+
+1. loads and orders the activity episodes;
+2. one-hot encodes activity type and transport mode;
+3. constructs the context variables;
+4. standardizes the behavioral and context inputs;
+5. generates normalized Random Fourier Features;
+6. estimates the density-matrix behavioral profiles;
+7. sequentially updates traveler states;
+8. performs eigendecomposition of the learned profiles; and
+9. decodes the dominant behavioral sub-patterns using the observed activity data.
+
+The default model configuration used in the paper is:
 
 | Setting | Value |
 | --- | ---: |
@@ -293,17 +253,173 @@ The default configuration reproduces the core model specification used in the ma
 | Epochs | 8 |
 | Chunk size | 1000 |
 | Learning rate | 0.005 |
-| `alpha` initialization | 0.30 |
-| `eta` initialization | 0.10 |
+| `alpha` | 0.30 |
+| `eta` | 0.10 |
 | Entropy regularization | \(10^{-4}\) |
 | L2 regularization on `beta` | 0.30 |
-| Random seed | 42 |
 
-The RFF mapping itself uses:
+---
+
+## Ablation Study
+
+The three ablation experiments used in the paper are combined in:
+
+```text
+ablation_study.py
+```
+
+Run the ablations with:
+
+```bash
+python ablation_study.py
+```
+
+The script evaluates:
+
+- **No context activation:** \(\alpha = 0\);
+- **No behavioral adaptation/state update:** \(\eta = 0\); and
+- **No within-profile sub-pattern structure:** rank \(r = 1\).
+
+To also estimate the full model in the same run and calculate changes in negative log-likelihood relative to the full specification:
+
+```bash
+python ablation_study.py --include-full
+```
+
+Results are saved under:
+
+```text
+ablation_results/
+```
+
+including an `ablation_summary.csv` file.
+
+---
+
+## Comparison Models
+
+The benchmark models used in the paper are implemented in:
+
+```text
+comparison_models.py
+```
+
+Run all comparison models with:
+
+```bash
+python comparison_models.py
+```
+
+The script estimates:
+
+- **Multinomial Logit (MNL)**;
+- **Joint Latent Class Model** with participant-level class membership; and
+- **Hidden Markov Model (HMM)** with dynamic latent states.
+
+Results are saved under:
+
+```text
+comparison_results/
+```
+
+with separate subdirectories for the MNL, latent class, and HMM models, together with a combined summary file.
+
+---
+
+## Reproducing Paper Figures
+
+Selected figure-generation routines used in the paper are provided in:
+
+```text
+paper_figures.py
+```
+
+This file contains reusable functions for:
+
+- the individual temperature-shock counterfactual figure;
+- the population temperature-shock summary;
+- the context-activation coefficient figure;
+- density-matrix profile fingerprint/eigenmode figures; and
+- traveler state evolution with optional HMM-state comparison.
+
+The figure script does **not** re-estimate the model. It uses arrays, estimated parameters, and tables produced by the model and comparison analyses.
+
+Functions can be imported as needed:
+
+```python
+from paper_figures import (
+    plot_individual_temperature_shock,
+    plot_population_temperature_shock,
+    plot_context_activation,
+    plot_profile_fingerprints,
+    plot_state_evolution,
+)
+```
+
+Each function contains a docstring describing the required inputs and saves the corresponding figure in both PDF and PNG formats.
+
+---
+
+## Reproducibility
+
+To keep stochastic components reproducible, **random seed 42 is used throughout the repository wherever a random seed is required**.
+
+This includes, where applicable:
+
+- NumPy random initialization;
+- PyTorch random initialization;
+- Random Fourier Feature generation;
+- latent class model initialization;
+- HMM initialization; and
+- random participant selection for traveler-level visualization.
+
+The RFF mapping also uses:
 
 ```text
 random_state = 42
 ```
+
+Using the same seed, software versions, input data, and model settings is recommended when reproducing the reported results.
+
+---
+
+## Typical Workflow
+
+A complete repository workflow is:
+
+```text
+1. Obtain TimeUse+ and NOAA GSOD data
+            |
+            v
+2. preprocess_timeuse.py
+            |
+            v
+   activities_merged4.csv
+            |
+            +-----------------------------+
+            |              |              |
+            v              v              v
+3. Main model      4. Ablation       5. Comparison
+   quantum_           ablation_          comparison_
+   traveler_          study.py           models.py
+   profiling.py
+            |              |              |
+            +--------------+--------------+
+                           |
+                           v
+                  6. paper_figures.py
+```
+
+In command-line form:
+
+```bash
+python preprocess_timeuse.py
+python quantum_traveler_profiling.py
+python ablation_study.py --include-full
+python comparison_models.py
+```
+
+The outputs from these analyses can then be passed to the plotting functions in `paper_figures.py` to reproduce selected manuscript figures.
 
 
 ## Contact
